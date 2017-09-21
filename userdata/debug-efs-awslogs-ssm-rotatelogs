@@ -16,7 +16,7 @@ echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
 #configure Docker
 echo "OPTIONS=\"-D -H tcp://0.0.0.0:4243 -H unix:///var/run/docker.sock \$OPTIONS\"" >> /etc/sysconfig/docker
 
-cat > /etc/docker/ <<- EOF
+cat > /etc/docker/daemon.json <<- EOF
 {
     "log-driver": "json-file",
     "log-opts": {
