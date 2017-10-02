@@ -20,14 +20,14 @@ cat > /etc/docker/daemon.json <<- EOF
 {
     "log-driver": "json-file",
     "log-opts": {
-    "max-size": "1m",
+    "max-size": "10m",
     "max-file": "10"
     }
 }
 
 EOF
 
-yum install -y mc screen wget python27-pip nfs-utils jq awslogs git
+yum install -y mc screen wget python27-pip nfs-utils jq awslogs git amazon-ssm-agent
 pip install awscli
 
 #EFS Bits
