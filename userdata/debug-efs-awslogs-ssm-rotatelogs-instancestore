@@ -1,0 +1,135 @@
+Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+MIME-Version: 1.0
+
+--==BOUNDARY==
+Content-Type: text/cloud-boothook; charset="us-ascii"
+
+cloud-init-per once wipefs -a /dev/xvdcz
+cloud-init-per once yum install -y mc screen wget python27-pip nfs-utils jq awslogs git
+cloud-init-per once pip install awscli
+
+
+#configure Docker
+cloud-init-per once echo "OPTIONS=\"-D -H tcp://0.0.0.0:4243 -H unix:///var/run/docker.sock \$OPTIONS\"" >> /etc/sysconfig/docker
+
+cloud-init-per once cat > /etc/docker/daemon.json <<- EOF
+{
+    "log-driver": "json-file",
+    "log-opts": {
+    "max-size": "1m",
+    "max-file": "10"
+    }
+}
+
+EOF
+
+
+#EFS Bits
+cloud-init-per once mkdir /mnt/efs
+
+EC2_AVAIL_ZONE=`curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone`
+EC2_REGION=us-west-2
+EFS_FILE_SYSTEM_ID=fs-564cbfff
+
+DIR_SRC=$EC2_AVAIL_ZONE.$EFS_FILE_SYSTEM_ID.efs.$EC2_REGION.amazonaws.com
+DIR_TGT=/mnt/efs
+cloud-init-per once touch /home/ec2-user/echo.res
+cloud-init-per once echo $EFS_FILE_SYSTEM_ID >> /home/ec2-user/echo.res
+cloud-init-per once echo $EC2_AVAIL_ZONE >> /home/ec2-user/echo.res
+cloud-init-per once echo $EC2_REGION >> /home/ec2-user/echo.res
+cloud-init-per once echo $DIR_SRC >> /home/ec2-user/echo.res
+cloud-init-per once echo $DIR_TGT >> /home/ec2-user/echo.res
+cloud-init-per once mount -t nfs4 $DIR_SRC:/ $DIR_TGT >> /home/ec2-user/echo.res
+cloud-init-per once cp -p /etc/fstab /etc/fstab.back-$(date +%F)
+cloud-init-per once echo -e "$DIR_SRC:/ \t\t $DIR_TGT \t\t nfs \t\t defaults \t\t 0 \t\t 0" | tee -a /etc/fstab
+
+
+
+--==BOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+#!/bin/bash
+# Configure ECS
+echo ECS_CLUSTER=ECS-StandAlone >> /etc/ecs/ecs.config
+echo ECS_UPDATES_ENABLED=true >> /etc/ecs/ecs.config
+echo ECS_AVAILABLE_LOGGING_DRIVERS=[\"json-file\",\"syslog\",\"awslogs\"] >> /etc/ecs/ecs.config
+echo ECS_DISABLE_PRIVILEGED=false >> /etc/ecs/ecs.config
+echo ECS_LOGLEVEL=debug >> /etc/ecs/ecs.config
+echo ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION=30m >> /etc/ecs/ecs.config
+echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
+
+
+# Inject the CloudWatch Logs configuration file contents
+cat > /etc/awslogs/awslogs.conf <<- EOF
+[general]
+state_file = /var/lib/awslogs/agent-state        
+ 
+[/var/log/dmesg]
+file = /var/log/dmesg
+log_group_name = /var/log/dmesg
+log_stream_name = {cluster}/{container_instance_id}
+
+[/var/log/messages]
+file = /var/log/messages
+log_group_name = /var/log/messages
+log_stream_name = {cluster}/{container_instance_id}
+datetime_format = %b %d %H:%M:%S
+
+[/var/log/docker]
+file = /var/log/docker
+log_group_name = /var/log/docker
+log_stream_name = {cluster}/{container_instance_id}
+datetime_format = %Y-%m-%dT%H:%M:%S.%f
+
+[/var/log/ecs/ecs-init.log]
+file = /var/log/ecs/ecs-init.log.*
+log_group_name = /var/log/ecs/ecs-init.log
+log_stream_name = {cluster}/{container_instance_id}
+datetime_format = %Y-%m-%dT%H:%M:%SZ
+
+[/var/log/ecs/ecs-agent.log]
+file = /var/log/ecs/ecs-agent.log.*
+log_group_name = /var/log/ecs/ecs-agent.log
+log_stream_name = {cluster}/{container_instance_id}
+datetime_format = %Y-%m-%dT%H:%M:%SZ
+
+[/var/log/ecs/audit.log]
+file = /var/log/ecs/audit.log.*
+log_group_name = /var/log/ecs/audit.log
+log_stream_name = {cluster}/{container_instance_id}
+datetime_format = %Y-%m-%dT%H:%M:%SZ
+
+EOF
+
+# Set the region to send CloudWatch Logs data to (the region where the container instance is located)
+region=$(curl 169.254.169.254/latest/meta-data/placement/availability-zone | sed s'/.$//')
+sed -i -e "s/region = us-east-1/region = $region/g" /etc/awslogs/awscli.conf
+
+--==BOUNDARY==
+Content-Type: text/upstart-job; charset="us-ascii"
+
+#upstart-job
+description "Configure and start CloudWatch Logs agent on Amazon ECS container instance"
+author "Amazon Web Services"
+start on started ecs
+
+script
+    exec 2>>/var/log/ecs/cloudwatch-logs-start.log
+    set -x
+    
+    until curl -s http://localhost:51678/v1/metadata
+    do
+	sleep 1	
+    done
+
+    # Grab the cluster and container instance ARN from instance metadata
+    cluster=$(curl -s http://localhost:51678/v1/metadata | jq -r '. | .Cluster')
+    container_instance_id=$(curl -s http://localhost:51678/v1/metadata | jq -r '. | .ContainerInstanceArn' | awk -F/ '{print $2}' )
+    
+    # Replace the cluster name and container instance ID placeholders with the actual values
+    sed -i -e "s/{cluster}/$cluster/g" /etc/awslogs/awslogs.conf
+    sed -i -e "s/{container_instance_id}/$container_instance_id/g" /etc/awslogs/awslogs.conf
+    
+    service awslogs start
+    chkconfig awslogs on
+end script
+--==BOUNDARY==--
