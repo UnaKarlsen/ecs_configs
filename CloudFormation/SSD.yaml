@@ -1,0 +1,47 @@
+Resources:
+  LaunchConfiguration:
+    Type: "AWS::AutoScaling::LaunchConfiguration"
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: "/dev/xvda"
+          Ebs:
+            VolumeSize: "8"
+        - DeviceName: "/dev/xvdcz"
+          VirtualName: "ephemeral0"
+      IamInstanceProfile: "arn:aws:iam::231879086156:instance-profile/ecsInstanceRole"
+      ImageId: "ami-40ddb938"
+      InstanceType: "m3.large"
+      KeyName: "unaka-keypair-us-west-2"
+      SecurityGroups:
+        - "sg-ad20e3ca"
+      UserData: !Base64
+        "Fn::Sub": |
+          Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+          MIME-Version: 1.0
+          
+          --==BOUNDARY==
+          Content-Type: text/cloud-boothook; charset="us-ascii"
+
+          #cloud-init-per once Wipe-NVMeInstanceStore wipefs -a /dev/nvme0n1
+          #cloud-init-per once ConfigureDockerStorage sed -i 's/xvdcz/nvme0n1/g' /etc/sysconfig/docker-storage-setup 
+          cloud-init-per once Wipe-InstanceStore wipefs -a /dev/xvdcz
+          
+          --==BOUNDARY==
+          Content-Type: text/x-shellscript; charset="us-ascii"
+          #!/bin/bash
+          # Configure ECS
+          echo ECS_CLUSTER=ECS-StandAlone >> /etc/ecs/ecs.config
+          
+          --==BOUNDARY==--
+
+  AutoScalingGroup:
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    Properties:
+      VPCZoneIdentifier: 
+        - "subnet-eee1ab88"
+      DesiredCapacity: "1"
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MaxSize: "1"
+      MinSize: "1"
+      HealthCheckGracePeriod: "300"
+
